@@ -11,6 +11,7 @@ Tiny, fast, zero-boilerplate runtime Dependency Injection (DI) framework for Jav
 - [Usage](#usage)
     - [1. Define Your Components](#1-define-your-components)
     - [2. Configure and Initialize](#2-configure-and-initialize)
+      - [ Field Injection (Optional)](#field-injection-optional)
     - [Binding Interfaces and Named Implementations](#binding-interfaces-and-named-implementations)
     - [Named implementations via @Named](#named-implementations-via-named)
     - [Custom Providers (like @Provides)](#custom-providers-like-provides)
@@ -29,6 +30,8 @@ Tiny, fast, zero-boilerplate runtime Dependency Injection (DI) framework for Jav
     - [Utilities](#utilities)
 - [Comparison Tables](#comparison-tables)
 - [Documentation](#documentation)
+- [DI Containers Comparison](#di-containers-comparison)
+- [Notice](#notice)
 - [Contact](#contact)
 
 This framework provides dependency injection (DI) based on JSR-330 (jakarta.inject.*) annotations. It automatically discovers and wires your application's components through constructor injection, leveraging classpath scanning near a zero-configuration setup. Designed for simplicity and fast startup, it's perfect for smaller applications, microservices, and tools that need the benefits of DI without the overhead associated with larger frameworks like Spring, Guice, and Dagger 2.
@@ -108,7 +111,7 @@ To use Dimension-DI in your Maven project, add the following dependency to your 
 
 ## Usage
 
-#### 1. Define Your Components
+### 1. Define Your Components
 
 Create your services and components using standard `jakarta.inject.*` annotations. Your classes should not have any knowledge of Dimension-DI.
 
@@ -142,7 +145,7 @@ class App {
 }
 ``` 
 
-#### 2. Configure and Initialize
+### 2. Configure and Initialize
 
 Scan your base packages and get entry point from ServiceLocator
 
@@ -163,6 +166,28 @@ public class Main {
 ``` 
 
 All dependencies are resolved via constructor injection. @Singleton classes are cached.
+
+##### Field Injection (Optional)
+
+While constructor injection is recommended, Dimension-DI also supports field injection for flexibility:
+
+```Java
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+
+class NotificationService {
+  @Inject private EmailSender emailSender;
+
+  @Inject @Named("sms")
+  private MessageSender smsSender;
+
+  public void notify(User user, String message) {
+    emailSender.send(user.getEmail(), message);
+  }
+}
+``` 
+
+Note: Field injection occurs after construction. Final fields cannot be injected.
 
 ### Binding Interfaces and Named Implementations
 
@@ -336,9 +361,9 @@ void runTest() {
 
 - Thread-safe registry of `Key -> Supplier<?>`
 - Resolves constructor parameters on-demand (supports `@Named`)
+- Performs field injection after construction (supports `@Inject` on fields, including `@Named` qualifiers)
 - Detects circular dependencies and throws with a helpful stack
 - Caches singletons via `SingletonSupplier`
-- **Utilities**: `singleton`, `override`, `alias`, `clear`
 
 **Note**: Providers are keyed by concrete classes by default. Interfaces require explicit `bind` or `bindNamed`.
 
@@ -355,11 +380,14 @@ void runTest() {
 ## Limitations
 
 - Only Jakarta Inject annotations are supported:
-    - `@Inject` (constructors), `@Singleton`, `@Named` (on constructor params)
+  - `@Inject` (on constructors and fields)
+  - `@Singleton`
+  - `@Named` (on constructor parameters and fields)
+- Field injection works on `private`, `protected`, and `public` non-final fields, including inherited ones.
 - **Not yet supported**:
-    - Field or method injection
-    - Custom qualifiers beyond `@Named`
-    - Assisted injection, `Provider<T>`, multi-bindings (collections), scopes beyond singleton
+  - Method injection
+  - Custom qualifiers beyond `@Named`
+  - Assisted injection, `Provider<T>`, multi-bindings (collections), scopes beyond singleton
 - Scanning uses the JDK Class-File API.
 
 ---
@@ -386,12 +414,12 @@ void runTest() {
 
 ## Comparison Tables
 
-### Table 1: Dimension-DI vs Big Three
+### Table 1. Dimension-DI vs Big Three
 
 | Feature                       | Dimension-DI                           | Spring IoC                             | Google Guice               | Dagger 2                  |
 |-------------------------------|----------------------------------------|----------------------------------------|----------------------------|---------------------------|
 | Annotation Standard           | JSR-330 (Jakarta)                      | Spring-specific + JSR-330              | JSR-330                    | JSR-330 + custom          |
-| Dependency Injection          | Constructor only                       | Constructor, field, method             | Constructor, field, method | Constructor-based         |
+| Dependency Injection          | Constructor, Field                     | Constructor, field, method             | Constructor, field, method | Constructor-based         |
 | Learning Curve                | ⭐ Minimal                              | ⭐⭐⭐⭐⭐ Steep                            | ⭐⭐⭐ Moderate               | ⭐⭐⭐ Moderate              |
 | Performance                   | ⭐⭐⭐⭐⭐ Very High                        | ⭐⭐ Slow                                | ⭐⭐⭐ Medium                 | ⭐⭐⭐⭐⭐ Fastest             |
 | Startup Time                  | Ultra-fast                             | Slow                                   | Fast                       | Instant (compile-time)    |
@@ -401,28 +429,28 @@ void runTest() {
 | @Singleton Support            | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
 | @Named Qualifiers             | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
 | Custom Providers              | ✅ `provide()`                          | ✅ `@Bean`                              | ✅ `@Provides`              | ✅ `@Provides`             |
-| Field Injection               | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
+| Field Injection               | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
 | Method Injection              | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
 | Collections/Multi-bind        | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (@IntoSet/@IntoMap) |
 | Circular Dependency Detection | ✅ Yes, explicit                        | ✅ Yes                                  | ✅ Yes                      | ✅ Compile-time            |
 | Module/Config System          | Fluent Builder                         | `@Configuration` + XML                 | `Module` classes           | `Component` interface     |
 | Testing Support               | ✅ Override, Clear                      | ✅ Profiles, Mocks                      | ✅ Binding override         | ✅ Test components         |
 | JAR/Directory Scanning        | ✅ Both                                 | ✅ Both                                 | Manual by default          | N/A (compile-time)        |
-| Framework Size                | ~19KB                                  | ~30MB+                                 | ~782Kb                     | ~47Kb                     |
+| Framework Size                | ~19KB                                  | ~10MB+                                 | ~782Kb                     | ~47Kb                     |
 | Best For                      | Microservices, Tools, Minimal overhead | Enterprise apps, full web stack        | Medium projects, modular   | Android, compile-safety   |
 | Zero Configuration            | ✅ Full classpath scan                  | ⚠️ Needs setup                         | Manual registration        | Compile-time setup        |
 
 ---
 
-### Table 2: Dimension-DI vs Alternative Lightweight Containers
+### Table 2. Dimension-DI vs Alternative Lightweight Containers
 
 | Feature                       | Dimension-DI                | PicoContainer            | HK2                        | Avaje Inject             |
 |-------------------------------|-----------------------------|--------------------------|----------------------------|--------------------------|
 | Annotation Standard           | JSR-330                     | Custom only              | JSR-330                    | JSR-330                  |
 | Lightweight                   | ✅ Ultra-light               | ✅ Very light             | ⚠️ Moderate                | ✅ Light                  |
 | Classpath Scanning            | ✅ Class-File API            | ❌ Manual only            | ✅ Yes                      | ✅ Yes                    |
-| Constructor Injection         | ✅ Only method               | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
-| Field Injection               | ❌ No                        | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
+| Constructor Injection         | ✅ Yes                       | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
+| Field Injection               | ✅ Yes                       | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
 | Scoping                       | @Singleton                  | Singleton                | Singleton, request, custom | Singleton, custom        |
 | @Named Qualifiers             | ✅ Yes                       | ❌ No                     | ✅ Yes                      | ✅ Yes                    |
 | Custom Providers              | ✅ `provide()`               | ✅ Manual factories       | ✅ `@Factory`               | ✅ `@Factory`             |
@@ -440,11 +468,86 @@ void runTest() {
 | Best For                      | Microservices, fast startup | Embedded, custom, legacy | OSGi, modular systems      | Compile-safe DI, GraalVM |
 | Java Version                  | 25+                         | 8+                       | 8+                         | 11+                      |
 
+---
+
+## DI Containers Comparison
+
+Using source code of [DI Containers Comparison](https://github.com/Heapy/di-comparison) project.
+
+### Test environment
+```
+Processor: AMD Ryzen 5 5600H with Radeon Graphics, 3301 Mhz, 6 Core(s), 12 Logical Processor(s)
+Memory: 16.0 GB
+Disk: Generic Flash Disk USB Device<br>- SAMSUNG MZVL2512HCJQ-00B00 (476.94 GB) 
+OS: Microsoft Windows 11 (WSL2)
+
+java version "25.0.1" 2025-10-21 LTS
+Java(TM) SE Runtime Environment (build 25.0.1+8-LTS-27)
+Java HotSpot(TM) 64-Bit Server VM (build 25.0.1+8-LTS-27, mixed mode, sharing)
+```
+
+### Table 3. Results for JVM
+| DI  | Jar w/Deps Size, Mb | ⬇️ Wall, ms | User, ms | Sys, ms | Max RSS, Mb | Allocated, Mb | Alloc Count | LoC |
+|-----|---------------------|-------------|----------|---------|-------------|---------------|-------------|-----|
+| jvm | 1.75                | 79.30       | 23.20    | 18.40   | 41.38       | 0.25          | 6           | 2   |
+
+### Table 4. Results for 2 classes
+| DI                   | Jar w/Deps Size, Mb | ⬇️ Wall, ms   | User, ms      | Sys, ms      | Max RSS, Mb  | Allocated, Mb | Alloc Count | LoC       |
+|----------------------|---------------------|---------------|---------------|--------------|--------------|---------------|-------------|-----------|
+| baseline             | 1.75                | 100.30        | 47.00         | 22.10        | 43.54        | 0.25          | 6           | 24        |
+| kotlin-lazy          | 1.75                | 101.70        | 53.30         | 20.90        | 43.73        | 0.25          | 7           | 31        |
+| dagger               | 1.82                | 157.40        | 59.80         | 27.40        | 43.73        | 0.26          | 8           | 51        |
+| cayennedi            | 1.82                | 160.50        | 119.00        | 30.60        | 51.27        | 0.25          | 8           | 49        |
+| <b>dimension</b>     | <b>1.78</b>         | <b>178.70</b> | <b>136.50</b> | <b>35.90</b> | <b>54.57</b> | <b>0.28</b>   | <b>12</b>   | <b>37</b> |
+| kodein               | 3.43                | 248.30        | 173.10        | 42.70        | 53.92        | 2.41          | 33          | 32        |
+| koin                 | 2.22                | 283.90        | 180.90        | 49.80        | 58.18        | 2.15          | 38          | 31        |
+| koin-reflect         | 2.22                | 288.70        | 183.70        | 50.40        | 56.79        | 2.32          | 39          | 33        |
+| komok-to-be-injected | 2.48                | 296.00        | 157.90        | 49.80        | 53.41        | 2.56          | 34          | 33        |
+| bootique             | 4.69                | 426.40        | 403.20        | 65.50        | 68.51        | 0.41          | 37          | 63        |
+| spring-xml           | 6.78                | 574.70        | 535.40        | 81.50        | 74.79        | 0.67          | 66          | 37        |
+| guice                | 5.62                | 620.00        | 489.70        | 88.70        | 69.18        | 0.62          | 60          | 47        |
+| spring               | 6.78                | 653.60        | 601.70        | 94.30        | 71.25        | 1.17          | 92          | 38        |
+| spring-index         | 6.78                | 669.70        | 652.60        | 90.20        | 74.07        | 0.95          | 100         | 34        |
+| spring-scan          | 6.78                | 704.20        | 666.50        | 115.10       | 73.60        | 1.05          | 96          | 34        |
+| owb                  | 3.30                | 712.70        | 702.20        | 98.00        | 74.61        | 0.74          | 75          | 49        |
+| springboot           | 10.33               | 1,845.00      | 2,346.50      | 215.60       | 110.21       | 2.45          | 355         | 56        |
+| springboot-index     | 10.33               | 1,850.70      | 2,259.60      | 228.50       | 109.98       | 2.18          | 336         | 45        |
+
+### Table 5. Results for 100 classes
+| DI                        | Jar w/Deps Size, Mb | ⬇️ Wall, ms   | User, ms      | Sys, ms      | Max RSS, Mb  | Allocated, Mb | Alloc Count | LoC        |
+|---------------------------|---------------------|---------------|---------------|--------------|--------------|---------------|-------------|------------|
+| baseline-deep             | 1.88                | 175.70        | 110.80        | 32.90        | 44.27        | 0.25          | 11          | 719        |
+| kotlin-lazy-deep          | 1.89                | 254.00        | 240.60        | 45.30        | 56.30        | 0.39          | 26          | 925        |
+| dagger-deep               | 2.05                | 278.90        | 180.40        | 44.40        | 47.96        | 0.26          | 14          | 1145       |
+| cayennedi-deep            | 2.00                | 305.00        | 308.80        | 53.10        | 58.54        | 0.27          | 19          | 1953       |
+| <b>dimension-deep</b>     | <b>1.91</b>         | <b>376.60</b> | <b>464.80</b> | <b>53.00</b> | <b>67.68</b> | <b>0.63</b>   | <b>46</b>   | <b>831</b> |
+| koin-deep                 | 2.37                | 418.20        | 371.00        | 65.10        | 67.83        | 2.68          | 57          | 725        |
+| komok-to-be-injected-deep | 2.62                | 456.20        | 358.30        | 65.20        | 67.63        | 2.83          | 57          | 927        |
+| koin-reflect-deep         | 2.52                | 478.30        | 349.90        | 74.80        | 61.65        | 2.75          | 55          | 727        |
+| kodein-deep               | 3.86                | 480.30        | 424.40        | 75.30        | 69.57        | 1.92          | 59          | 726        |
+| bootique-deep             | 4.82                | 517.80        | 511.50        | 78.20        | 69.98        | 0.42          | 42          | 1057       |
+| guice-deep                | 5.75                | 689.80        | 628.50        | 104.40       | 74.25        | 0.64          | 74          | 1141       |
+| spring-xml-deep           | 6.90                | 868.60        | 843.30        | 118.60       | 75.45        | 1.24          | 94          | 931        |
+| spring-deep               | 6.91                | 1,066.80      | 1,189.30      | 140.30       | 75.31        | 0.98          | 123         | 1032       |
+| owb-deep                  | 3.42                | 1,130.60      | 1,391.70      | 147.00       | 78.70        | 1.04          | 137         | 1143       |
+| spring-index-deep         | 6.91                | 1,187.30      | 1,521.40      | 141.90       | 81.28        | 1.67          | 213         | 729        |
+| spring-scan-deep          | 6.91                | 1,361.00      | 1,719.00      | 168.00       | 81.69        | 1.68          | 218         | 728        |
+| springboot-index-deep     | 10.46               | 2,234.70      | 3,027.00      | 247.60       | 112.44       | 2.99          | 451         | 739        |
+| springboot-deep           | 10.46               | 2,558.00      | 3,515.90      | 275.90       | 115.62       | 2.91          | 464         | 1050       |
+
 ## Documentation
 
 | EN                             | RU                                |
 |:-------------------------------|:----------------------------------|
 | [README in English](README.md) | [README на русском](README-RU.md) |
+
+## Notice
+
+Section [DI Containers Comparison](#di-containers-comparison) was created using:
+
+*   **Project**: [DI Containers Comparison](https://github.com/Heapy/di-comparison)
+*   **Author**: [Ruslan Ibrahimau (Ibragimov)](https://github.com/IRus)
+*   **License**: [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
 
 ## Contact
 Created by [@akardapolov](mailto:akardapolov@yandex.ru)

@@ -4,47 +4,64 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
- * Dimension-DI: tiny runtime locator for constructor-injected objects.
- *
- * - Keys are (type, optional name) to support jakarta.inject.Named
- * - Providers are Suppliers invoked lazily
- * - Singletons are cached via a wrapper
- * - Cycle detection guards against circular constructor graphs
- *
- * This class is intentionally simple and serves as the runtime "container".
+ * Dimension-DI: tiny runtime locator for constructor-injected objects. Keys are (type, optional name) to support
+ * jakarta.inject.Named Providers are Suppliers invoked lazily Singletons are cached via a wrapper Cycle detection
+ * guards against circular constructor graphs This class is intentionally simple and serves as the runtime "container".
  * Discovery and auto-registration are done by DependencyScanner + DimensionDI.Builder.
  */
 public final class ServiceLocator {
 
-  private ServiceLocator() {}
+  private ServiceLocator() {
+  }
 
   // -----------------------------
   // Public key type
   // -----------------------------
   public static final class Key {
+
     public final Class<?> type;
     public final String name;
 
-    Key(Class<?> type, String name) {
+    Key(Class<?> type,
+        String name) {
       this.type = Objects.requireNonNull(type, "type");
       this.name = (name == null || name.isBlank()) ? null : name;
     }
 
-    public static Key of(Class<?> type) { return new Key(type, null); }
-    public static Key of(Class<?> type, String name) { return new Key(type, name); }
+    public static Key of(Class<?> type) {
+      return new Key(type, null);
+    }
 
-    @Override public boolean equals(Object o) {
-      if (this == o) return true;
-      if (!(o instanceof Key k)) return false;
+    public static Key of(Class<?> type,
+                         String name) {
+      return new Key(type, name);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (!(o instanceof Key k)) {
+        return false;
+      }
       return type.equals(k.type) && Objects.equals(name, k.name);
     }
-    @Override public int hashCode() { return Objects.hash(type, name); }
-    @Override public String toString() {
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(type, name);
+    }
+
+    @Override
+    public String toString() {
       return "Key{" + type.getName() + (name != null ? ", name=" + name : "") + "}";
     }
   }
@@ -55,7 +72,9 @@ public final class ServiceLocator {
   private static final Map<Key, Supplier<?>> providers = new ConcurrentHashMap<>();
   private static final ThreadLocal<Deque<Key>> creationStack = ThreadLocal.withInitial(ArrayDeque::new);
 
-  public static void clear() { providers.clear(); }
+  public static void clear() {
+    providers.clear();
+  }
 
   public static void init(Map<Key, Supplier<?>> map) {
     clear();
@@ -113,11 +132,18 @@ public final class ServiceLocator {
   public static <T> Supplier<T> singleton(Supplier<T> delegate) {
     return new SingletonSupplier<>(delegate);
   }
+
   private static final class SingletonSupplier<T> implements Supplier<T> {
+
     private final Supplier<T> delegate;
     private volatile T instance;
-    private SingletonSupplier(Supplier<T> delegate) { this.delegate = delegate; }
-    @Override public T get() {
+
+    private SingletonSupplier(Supplier<T> delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public T get() {
       T r = instance;
       if (r == null) {
         synchronized (this) {
@@ -130,9 +156,9 @@ public final class ServiceLocator {
   }
 
   /**
-   * Create a provider from an @Inject (or default) constructor.
-   * - Resolves parameter @Named values once and then uses ServiceLocator.get(...) at creation time.
-   * - If singleton==true, result is wrapped in a singleton cache.
+   * Create a provider from an @Inject (or default) constructor. Resolves parameter @Named values once and then uses
+   * ServiceLocator.get(...) at creation time. If singleton==true, result is wrapped in a singleton cache. After
+   * construction, performs field injection (@Inject on fields, supports @Named).
    */
   public static <T> Supplier<T> createConstructorProvider(Class<T> clazz, boolean singleton) {
     Constructor<T> ctor = findInjectConstructor(clazz);
@@ -152,13 +178,70 @@ public final class ServiceLocator {
       for (int i = 0; i < types.length; i++) {
         args[i] = (names[i] != null) ? ServiceLocator.get(types[i], names[i]) : ServiceLocator.get(types[i]);
       }
+
+      final T instance;
       try {
-        return (T) mh.invokeWithArguments(args);
+        @SuppressWarnings("unchecked")
+        T tmp = (T) mh.invokeWithArguments(args);
+        instance = tmp;
       } catch (Throwable t) {
+        // Only wrap constructor instantiation errors
+        if (t instanceof IllegalStateException ise) throw ise;  // pass through
+        if (t instanceof RuntimeException re) throw re;         // pass through
         throw new RuntimeException("Failed to instantiate " + clazz.getName(), t);
       }
+
+      injectMembers(instance);
+      return instance;
     };
     return singleton ? singleton(s) : s;
+  }
+
+  /**
+   * Perform field injection on the given instance. Injects all fields annotated with @Inject in the class hierarchy
+   * (super first). Supports @Named on fields. Skips static fields. Throws if a target field is final.
+   */
+  public static void injectMembers(Object instance) {
+    if (instance == null) {
+      return;
+    }
+
+    // Traverse superclasses first to mirror typical DI behavior
+    Deque<Class<?>> hierarchy = new ArrayDeque<>();
+    for (Class<?> c = instance.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+      hierarchy.push(c);
+    }
+
+    while (!hierarchy.isEmpty()) {
+      Class<?> c = hierarchy.pop();
+      for (Field f : c.getDeclaredFields()) {
+        if (!f.isAnnotationPresent(jakarta.inject.Inject.class)) {
+          continue;
+        }
+
+        int mod = f.getModifiers();
+        if (Modifier.isStatic(mod)) {
+          continue;
+        }
+        if (Modifier.isFinal(mod)) {
+          throw new IllegalStateException("Cannot inject into final field: " + c.getName() + "#" + f.getName());
+        }
+
+        jakarta.inject.Named named = f.getAnnotation(jakarta.inject.Named.class);
+        String name = (named != null && !named.value().isBlank()) ? named.value() : null;
+
+        Object dep = (name == null)
+            ? ServiceLocator.get(f.getType())
+            : ServiceLocator.get(f.getType(), name);
+
+        try {
+          f.setAccessible(true);
+          f.set(instance, dep);
+        } catch (IllegalAccessException e) {
+          throw new RuntimeException("Failed to inject field: " + c.getName() + "#" + f.getName(), e);
+        }
+      }
+    }
   }
 
   @SuppressWarnings("unchecked")
@@ -184,7 +267,8 @@ public final class ServiceLocator {
     return (Constructor<T>) inject;
   }
 
-  private static <T> MethodHandle unreflectConstructor(Class<T> clazz, Constructor<T> ctor) {
+  private static <T> MethodHandle unreflectConstructor(Class<T> clazz,
+                                                       Constructor<T> ctor) {
     try {
       MethodHandles.Lookup lookup = MethodHandles.lookup();
       MethodHandles.Lookup privateLookup = MethodHandles.privateLookupIn(clazz, lookup);

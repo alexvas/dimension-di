@@ -32,7 +32,7 @@ class DICommonTest {
 
     @Test
     @DisplayName("Prototype scope should return a new instance for each request")
-    void prototypeScope_returnsNewInstance_forEachRequest() {
+    void prototypeScopeReturnsNewInstanceForEachRequest() {
       // Arrange: Scan the package containing our test beans.
       DimensionDI.builder()
           .scanPackages(TEST_BEANS_PACKAGE)
@@ -51,7 +51,7 @@ class DICommonTest {
 
     @Test
     @DisplayName("Singleton scope should return the same instance for each request")
-    void singletonScope_returnsSameInstance_forEachRequest() {
+    void singletonScopeReturnsSameInstanceForEachRequest() {
       // Arrange: Scan the package.
       DimensionDI.builder()
           .scanPackages(TEST_BEANS_PACKAGE)
@@ -131,7 +131,7 @@ class DICommonTest {
 
     @Test
     @DisplayName("Requesting an unregistered bean should throw IllegalStateException")
-    void getUnregisteredBean_throwsException() {
+    void getUnregisteredBeanThrowsException() {
       // Arrange: Initialize an empty container.
       DimensionDI.builder().buildAndInit();
 
@@ -146,7 +146,7 @@ class DICommonTest {
 
     @Test
     @DisplayName("Circular dependency should throw IllegalStateException")
-    void circularDependency_throwsException() {
+    void circularDependencyThrowsException() {
       // Arrange: Manually register two providers that depend on each other.
       ServiceLocator.registerProvider(ClassA.class, () -> new ClassA(ServiceLocator.get(ClassB.class)));
       ServiceLocator.registerProvider(ClassB.class, () -> new ClassB(ServiceLocator.get(ClassA.class)));
