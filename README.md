@@ -11,7 +11,7 @@ Tiny, fast, zero-boilerplate runtime Dependency Injection (DI) framework for Jav
 - [Usage](#usage)
     - [1. Define Your Components](#1-define-your-components)
     - [2. Configure and Initialize](#2-configure-and-initialize)
-      - [ Field Injection (Optional)](#field-injection-optional)
+    - [Members Injection: Fields and Methods (Optional)](#members-injection-fields-and-methods-optional)
     - [Binding Interfaces and Named Implementations](#binding-interfaces-and-named-implementations)
     - [Named implementations via @Named](#named-implementations-via-named)
     - [Custom Providers (like @Provides)](#custom-providers-like-provides)
@@ -167,9 +167,13 @@ public class Main {
 
 All dependencies are resolved via constructor injection. @Singleton classes are cached.
 
-##### Field Injection (Optional)
+##### Members Injection: Fields and Methods (Optional)
 
-While constructor injection is recommended, Dimension-DI also supports field injection for flexibility:
+While constructor injection is highly recommended for mandatory dependencies, Dimension-DI also supports field and method injection. This is useful for optional dependencies or for integrating with frameworks that require it.
+
+**Field Injection**
+
+Annotate a non-final field with `@Inject`. The container will set its value after the object is constructed.
 
 ```Java
 import jakarta.inject.Inject;
@@ -187,7 +191,26 @@ class NotificationService {
 }
 ``` 
 
-Note: Field injection occurs after construction. Final fields cannot be injected.
+**Method Injection**
+
+Annotate a method with @Inject. The container will resolve its parameters and invoke it after construction.
+
+```Java
+class MyService {
+  private DependencyA depA;
+
+  // Must have an injectable constructor (e.g., public no-arg)
+  public MyService() {}
+
+  @Inject
+  public void initialize(DependencyA depA) {
+    // This method is called by the container after construction
+    this.depA = depA;
+  }
+}
+``` 
+
+Note: Members injection (both field and method) occurs after the constructor is called. The order of injection between fields and methods is not guaranteed. Final fields cannot be injected.
 
 ### Binding Interfaces and Named Implementations
 
@@ -361,7 +384,7 @@ void runTest() {
 
 - Thread-safe registry of `Key -> Supplier<?>`
 - Resolves constructor parameters on-demand (supports `@Named`)
-- Performs field injection after construction (supports `@Inject` on fields, including `@Named` qualifiers)
+- Performs members injection (fields and methods) after construction. Supports `@Inject` on fields and methods, including `@Named` qualifiers on fields and method parameters.
 - Detects circular dependencies and throws with a helpful stack
 - Caches singletons via `SingletonSupplier`
 
@@ -385,7 +408,6 @@ void runTest() {
   - `@Named` (on constructor parameters and fields)
 - Field injection works on `private`, `protected`, and `public` non-final fields, including inherited ones.
 - **Not yet supported**:
-  - Method injection
   - Custom qualifiers beyond `@Named`
   - Assisted injection, `Provider<T>`, multi-bindings (collections), scopes beyond singleton
 - Scanning uses the JDK Class-File API.
@@ -419,7 +441,7 @@ void runTest() {
 | Feature                       | Dimension-DI                           | Spring IoC                             | Google Guice               | Dagger 2                  |
 |-------------------------------|----------------------------------------|----------------------------------------|----------------------------|---------------------------|
 | Annotation Standard           | JSR-330 (Jakarta)                      | Spring-specific + JSR-330              | JSR-330                    | JSR-330 + custom          |
-| Dependency Injection          | Constructor, Field                     | Constructor, field, method             | Constructor, field, method | Constructor-based         |
+| Dependency Injection          | Constructor, field, method             | Constructor, field, method             | Constructor, field, method | Constructor-based         |
 | Learning Curve                | ⭐ Minimal                              | ⭐⭐⭐⭐⭐ Steep                            | ⭐⭐⭐ Moderate               | ⭐⭐⭐ Moderate              |
 | Performance                   | ⭐⭐⭐⭐⭐ Very High                        | ⭐⭐ Slow                                | ⭐⭐⭐ Medium                 | ⭐⭐⭐⭐⭐ Fastest             |
 | Startup Time                  | Ultra-fast                             | Slow                                   | Fast                       | Instant (compile-time)    |
@@ -430,7 +452,7 @@ void runTest() {
 | @Named Qualifiers             | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
 | Custom Providers              | ✅ `provide()`                          | ✅ `@Bean`                              | ✅ `@Provides`              | ✅ `@Provides`             |
 | Field Injection               | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
-| Method Injection              | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
+| Method Injection              | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
 | Collections/Multi-bind        | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (@IntoSet/@IntoMap) |
 | Circular Dependency Detection | ✅ Yes, explicit                        | ✅ Yes                                  | ✅ Yes                      | ✅ Compile-time            |
 | Module/Config System          | Fluent Builder                         | `@Configuration` + XML                 | `Module` classes           | `Component` interface     |
@@ -451,6 +473,7 @@ void runTest() {
 | Classpath Scanning            | ✅ Class-File API            | ❌ Manual only            | ✅ Yes                      | ✅ Yes                    |
 | Constructor Injection         | ✅ Yes                       | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
 | Field Injection               | ✅ Yes                       | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
+| Method Injection              | ✅ Yes                       | ✅ Yes                    | ✅ Yes                      | ✅ Yes                    |
 | Scoping                       | @Singleton                  | Singleton                | Singleton, request, custom | Singleton, custom        |
 | @Named Qualifiers             | ✅ Yes                       | ❌ No                     | ✅ Yes                      | ✅ Yes                    |
 | Custom Providers              | ✅ `provide()`               | ✅ Manual factories       | ✅ `@Factory`               | ✅ `@Factory`             |

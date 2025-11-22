@@ -3,9 +3,11 @@ package ru.dimension.di;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Parameter;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -158,7 +160,7 @@ public final class ServiceLocator {
   /**
    * Create a provider from an @Inject (or default) constructor. Resolves parameter @Named values once and then uses
    * ServiceLocator.get(...) at creation time. If singleton==true, result is wrapped in a singleton cache. After
-   * construction, performs field injection (@Inject on fields, supports @Named).
+   * construction, performs field and method injection.
    */
   public static <T> Supplier<T> createConstructorProvider(Class<T> clazz, boolean singleton) {
     Constructor<T> ctor = findInjectConstructor(clazz);
@@ -198,8 +200,10 @@ public final class ServiceLocator {
   }
 
   /**
-   * Perform field injection on the given instance. Injects all fields annotated with @Inject in the class hierarchy
-   * (super first). Supports @Named on fields. Skips static fields. Throws if a target field is final.
+   * Perform members injection on the given instance. Injects all fields and methods annotated with @Inject in the class
+   * hierarchy (super first). Supports @Named on fields and method parameters.
+   * <p>
+   * Skips static fields and methods. Throws if a target field is final or a method is abstract.
    */
   public static void injectMembers(Object instance) {
     if (instance == null) {
@@ -214,6 +218,8 @@ public final class ServiceLocator {
 
     while (!hierarchy.isEmpty()) {
       Class<?> c = hierarchy.pop();
+
+      // 1. Field Injection
       for (Field f : c.getDeclaredFields()) {
         if (!f.isAnnotationPresent(jakarta.inject.Inject.class)) {
           continue;
@@ -239,6 +245,37 @@ public final class ServiceLocator {
           f.set(instance, dep);
         } catch (IllegalAccessException e) {
           throw new RuntimeException("Failed to inject field: " + c.getName() + "#" + f.getName(), e);
+        }
+      }
+
+      // 2. Method Injection
+      for (Method m : c.getDeclaredMethods()) {
+        if (!m.isAnnotationPresent(jakarta.inject.Inject.class) || m.isBridge()) {
+          continue;
+        }
+
+        int mod = m.getModifiers();
+        if (Modifier.isStatic(mod) || Modifier.isAbstract(mod)) {
+          throw new IllegalStateException(
+              "Cannot inject into static or abstract method: " + c.getName() + "#" + m.getName());
+        }
+
+        Parameter[] params = m.getParameters();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+          Parameter p = params[i];
+          jakarta.inject.Named named = p.getAnnotation(jakarta.inject.Named.class);
+          String name = (named != null && !named.value().isBlank()) ? named.value() : null;
+          args[i] = (name == null)
+              ? ServiceLocator.get(p.getType())
+              : ServiceLocator.get(p.getType(), name);
+        }
+
+        try {
+          m.setAccessible(true);
+          m.invoke(instance, args);
+        } catch (IllegalAccessException | InvocationTargetException e) {
+          throw new RuntimeException("Failed to inject method: " + c.getName() + "#" + m.getName(), e);
         }
       }
     }
