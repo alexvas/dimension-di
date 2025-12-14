@@ -17,6 +17,7 @@ Tiny, fast, zero-boilerplate runtime Dependency Injection (DI) framework for Jav
     - [Custom Providers (like @Provides)](#custom-providers-like-provides)
     - [Skipping Scanning (Manual Wiring Only)](#skipping-scanning-manual-wiring-only)
     - [Testing and Overriding](#testing-and-overriding)
+    - [Assisted Injection (Factory Pattern)](#assisted-injection-factory-pattern)
 - [How It Works](#how-it-works)
     - [DependencyScanner](#dependencyscanner)
     - [DimensionDI.Builder](#dimensiondibuilder)
@@ -27,6 +28,7 @@ Tiny, fast, zero-boilerplate runtime Dependency Injection (DI) framework for Jav
     - [Bootstrap](#bootstrap)
     - [Runtime Fetch (Composition Root Only)](#runtime-fetch-composition-root-only)
     - [Manual Registration (on Builder)](#manual-registration-on-builder)
+    - [Assisted-injection](#assisted-injection)
     - [Utilities](#utilities)
 - [Comparison Tables](#comparison-tables)
 - [Documentation](#documentation)
@@ -364,6 +366,127 @@ void runTest() {
 }
 ```
 
+### Assisted Injection (Factory Pattern)
+
+When you need to create objects that require both DI-managed dependencies and runtime parameters, use Assisted Injection. This pattern uses factory interfaces to combine injected singletons with caller-provided values.
+
+#### Define a Component with @Assisted Parameters
+
+```java
+import jakarta.inject.Inject;
+import ru.dimension.di.Assisted;
+
+class UserSession {
+    private final String sessionId;
+    private final int timeout;
+    private final SessionManager manager;  // from DI
+    private final Logger logger;           // from DI
+
+    @Inject
+    UserSession(@Assisted String sessionId,
+                @Assisted int timeout,
+                SessionManager manager,
+                Logger logger) {
+        this.sessionId = sessionId;
+        this.timeout = timeout;
+        this.manager = manager;
+        this.logger = logger;
+    }
+}
+```
+
+#### Create a Factory Interface
+```java
+interface UserSessionFactory {
+    UserSession create(String sessionId, int timeout);
+}
+```
+
+#### Register and Use the Factory
+```java
+import ru.dimension.di.Assisted;
+import ru.dimension.di.DimensionDI;
+import ru.dimension.di.ServiceLocator;
+import jakarta.inject.Inject;
+
+// 1. Factory interface (must be defined)
+// The method name can be anything; only parameter types and order matter
+interface UserSessionFactory {
+  UserSession create(String sessionId, int timeoutSeconds);
+}
+
+// 2. Target class (must be defined)
+class UserSession {
+  private final String sessionId;
+  private final int timeout;
+
+  // @Inject is required on the constructor
+  // Parameters passed via the factory must be annotated with @Assisted
+  @Inject
+  public UserSession(@Assisted String sessionId,
+                     @Assisted int timeout,
+                     SomeDependency dependency) { // SomeDependency will be resolved from DI
+    this.sessionId = sessionId;
+    this.timeout = timeout;
+    System.out.println("Session created: " + sessionId + ", dependency: " + dependency);
+  }
+}
+
+// Simple dependency for example purposes
+class SomeDependency {
+  @Inject
+  public SomeDependency() {}
+}
+
+// 3. Usage (your code inside main)
+public class Main {
+  public static void main(String[] args) {
+    DimensionDI.builder()
+            .scanPackages("com.example") // Scans for injectable classes like SomeDependency
+            // Register the factory and bind it to the UserSession implementation
+            .bindFactory(UserSessionFactory.class, UserSession.class)
+            .buildAndInit();
+
+    // Get factory from DI
+    UserSessionFactory factory = ServiceLocator.get(UserSessionFactory.class);
+
+    // Create instances with runtime parameters
+    UserSession session1 = factory.create("sess-001", 3600);
+    UserSession session2 = factory.create("sess-002", 7200);
+  }
+}
+```
+
+#### Direct Creation (Without Factory Interface)
+
+For simpler cases, create instances directly without defining a factory interface:
+
+```java
+UserSession session = ServiceLocator.create(UserSession.class, "sess-001", 3600);
+```
+
+##### Named Assisted Parameters
+
+When you have multiple parameters of the same type, use named @Assisted annotations:
+
+```java
+class Connection {
+    @Inject
+    Connection(@Assisted("host") String host,
+               @Assisted("backup") String backupHost,
+               ConnectionPool pool) {
+        // ...
+    }
+}
+
+interface ConnectionFactory {
+    Connection create(@Assisted("host") String host,
+                      @Assisted("backup") String backupHost);
+}
+```
+
+**Note**: Factory interfaces are singletons by default. Each factory call creates a new instance of the target class, with DI dependencies (like @Singleton) properly shared across all created instances.
+
 ## How It Works
 
 ### DependencyScanner
@@ -384,11 +507,17 @@ void runTest() {
 
 - Thread-safe registry of `Key -> Supplier<?>`
 - Resolves constructor parameters on-demand (supports `@Named`)
-- Performs members injection (fields and methods) after construction. Supports `@Inject` on fields and methods, including `@Named` qualifiers on fields and method parameters.
+- **Smart fallback resolution:**
+  - Named requests fall back to unnamed bindings when named not found
+  - Unnamed requests resolve to unique named bindings when no unnamed exists
+  - Manual bindings override scanned bindings during auto-aliasing
+  - Helpful error messages show available bindings on resolution failure
+- Performs members injection (fields and methods) after construction
+- Supports `@Inject` on fields and methods, including `@Named` qualifiers
 - Detects circular dependencies and throws with a helpful stack
 - Caches singletons via `SingletonSupplier`
 
-**Note**: Providers are keyed by concrete classes by default. Interfaces require explicit `bind` or `bindNamed`.
+**Note**: Fallback behavior can be disabled for stricter DI semantics using `setNamedFallbackEnabled(false)` and `setUnnamedFallbackEnabled(false)`.
 
 ---
 
@@ -403,14 +532,16 @@ void runTest() {
 ## Limitations
 
 - Only Jakarta Inject annotations are supported:
-  - `@Inject` (on constructors and fields)
+  - `@Inject` (on constructors, fields, and methods)
   - `@Singleton`
-  - `@Named` (on constructor parameters and fields)
+  - `@Named` (on constructor parameters, fields, and method parameters)
 - Field injection works on `private`, `protected`, and `public` non-final fields, including inherited ones.
+- Named/unnamed fallback is enabled by default for convenience; disable for strict mode.
+- Manual bindings override scanned bindings when auto-aliasing is enabled.
 - **Not yet supported**:
   - Custom qualifiers beyond `@Named`
-  - Assisted injection, `Provider<T>`, multi-bindings (collections), scopes beyond singleton
-- Scanning uses the JDK Class-File API.
+  - `Provider<T>`, multi-bindings (collections), scopes beyond singleton
+- Scanning uses the JDK Class-File API (Java 24+).
 
 ---
 
@@ -423,44 +554,58 @@ void runTest() {
 - `ServiceLocator.get(MyRoot.class)`
 
 ### Manual Registration (on Builder)
-- `.provide(type, supplier)`
-- `.provideNamed(type, name, supplier)`
-- `.bind(interface, impl)`
-- `.bindNamed(interface, name, impl)`
+- `.provide(type, supplier)` — Registers a custom provider for a type
+- `.provideNamed(type, name, supplier)` — Registers a provider for a named type
+- `.provideSingleton(type, supplier)` — Registers a singleton provider
+- `.bind(interface, impl)` — Binds an interface to an implementation
+- `.bindNamed(interface, name, impl)` — Binds a named interface to an implementation
+- `.bindFactory(factoryInterface, targetClass)` — Registers an assisted injection factory
+- `.bindFactory(factoryInterface)` — Registers factory (target inferred from return type)
+- `.autoAliasUniqueNamed(boolean)` — Enable/disable auto-aliasing for unique named bindings (default: true)
+
+### Assisted Injection
+- `ServiceLocator.create(type, assistedArgs...)` — Creates instance with runtime parameters
+- `ServiceLocator.createFactory(factoryInterface, targetClass)` — Creates a factory implementation
+- `@Assisted` — Marks constructor parameter as runtime-provided
+- `@Assisted("name")` — Named assisted parameter for disambiguation
 
 ### Utilities
 - `ServiceLocator.singleton(supplier)` — Caches an instance.
 - `ServiceLocator.override(key, supplier)` — Replaces a provider at runtime.
 - `ServiceLocator.alias(aliasKey, targetKey)` — Creates an alias for a provider.
 - `ServiceLocator.clear()` — Resets the entire registry.
+- `ServiceLocator.setNamedFallbackEnabled(boolean)` — Enable/disable named→unnamed fallback (default: true).
+- `ServiceLocator.setUnnamedFallbackEnabled(boolean)` — Enable/disable unnamed→named fallback (default: true).
 
 ## Comparison Tables
 
 ### Table 1. Dimension-DI vs Big Three
 
-| Feature                       | Dimension-DI                           | Spring IoC                             | Google Guice               | Dagger 2                  |
-|-------------------------------|----------------------------------------|----------------------------------------|----------------------------|---------------------------|
-| Annotation Standard           | JSR-330 (Jakarta)                      | Spring-specific + JSR-330              | JSR-330                    | JSR-330 + custom          |
-| Dependency Injection          | Constructor, field, method             | Constructor, field, method             | Constructor, field, method | Constructor-based         |
-| Learning Curve                | ⭐ Minimal                              | ⭐⭐⭐⭐⭐ Steep                            | ⭐⭐⭐ Moderate               | ⭐⭐⭐ Moderate              |
-| Performance                   | ⭐⭐⭐⭐⭐ Very High                        | ⭐⭐ Slow                                | ⭐⭐⭐ Medium                 | ⭐⭐⭐⭐⭐ Fastest             |
-| Startup Time                  | Ultra-fast                             | Slow                                   | Fast                       | Instant (compile-time)    |
-| Runtime metadata              | JDK Class-File API                     | Dynamic reflection                     | Dynamic reflection         | None (compile-time)       |
-| Bytecode Generation           | None                                   | Extensive proxies                      | Extensive proxies          | Compile-time only         |
-| Scoping                       | @Singleton                             | Request, Session, Singleton, Prototype | Singleton, custom          | Singleton, custom         |
-| @Singleton Support            | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
-| @Named Qualifiers             | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
-| Custom Providers              | ✅ `provide()`                          | ✅ `@Bean`                              | ✅ `@Provides`              | ✅ `@Provides`             |
-| Field Injection               | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
-| Method Injection              | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
-| Collections/Multi-bind        | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (@IntoSet/@IntoMap) |
-| Circular Dependency Detection | ✅ Yes, explicit                        | ✅ Yes                                  | ✅ Yes                      | ✅ Compile-time            |
-| Module/Config System          | Fluent Builder                         | `@Configuration` + XML                 | `Module` classes           | `Component` interface     |
-| Testing Support               | ✅ Override, Clear                      | ✅ Profiles, Mocks                      | ✅ Binding override         | ✅ Test components         |
-| JAR/Directory Scanning        | ✅ Both                                 | ✅ Both                                 | Manual by default          | N/A (compile-time)        |
-| Framework Size                | ~19KB                                  | ~10MB+                                 | ~782Kb                     | ~47Kb                     |
-| Best For                      | Microservices, Tools, Minimal overhead | Enterprise apps, full web stack        | Medium projects, modular   | Android, compile-safety   |
-| Zero Configuration            | ✅ Full classpath scan                  | ⚠️ Needs setup                         | Manual registration        | Compile-time setup        |
+| Feature                | Dimension-DI                           | Spring IoC                             | Google Guice               | Dagger 2                  |
+|------------------------|----------------------------------------|----------------------------------------|----------------------------|---------------------------|
+| Annotation Standard    | JSR-330 (Jakarta)                      | Spring-specific + JSR-330              | JSR-330                    | JSR-330 + custom          |
+| Dependency Injection   | Constructor, field, method             | Constructor, field, method             | Constructor, field, method | Constructor-based         |
+| Learning Curve         | ⭐ Minimal                              | ⭐⭐⭐⭐⭐ Steep                            | ⭐⭐⭐ Moderate               | ⭐⭐⭐ Moderate              |
+| Performance            | ⭐⭐⭐⭐⭐ Very High                        | ⭐⭐ Slow                                | ⭐⭐⭐ Medium                 | ⭐⭐⭐⭐⭐ Fastest             |
+| Startup Time           | Ultra-fast                             | Slow                                   | Fast                       | Instant (compile-time)    |
+| Runtime metadata       | JDK Class-File API                     | Dynamic reflection                     | Dynamic reflection         | None (compile-time)       |
+| Bytecode Generation    | None                                   | Extensive proxies                      | Extensive proxies          | Compile-time only         |
+| Scoping                | @Singleton                             | Request, Session, Singleton, Prototype | Singleton, custom          | Singleton, custom         |
+| @Singleton Support     | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
+| @Named Qualifiers      | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes                     |
+| Custom Providers       | ✅ `provide()`                          | ✅ `@Bean`                              | ✅ `@Provides`              | ✅ `@Provides`             |
+| Assisted Injection     | ✅ `@Assisted` + Factory                | ❌ Manual                               | ✅ AssistedInject           | ✅ @AssistedInject         |
+| Field Injection        | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
+| Method Injection       | ✅ Yes                                  | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (members injection) |
+| Collections/Multi-bind | ❌ No                                   | ✅ Yes                                  | ✅ Yes                      | ✅ Yes (@IntoSet/@IntoMap) |
+| Named/Unnamed Fallback | ✅ Automatic                            | ❌ No                                   | ❌ No                       | ❌ No                      |
+| Circular detection     | ✅ Yes, explicit                        | ✅ Yes                                  | ✅ Yes                      | ✅ Compile-time            |
+| Module/Config System   | Fluent Builder                         | `@Configuration` + XML                 | `Module` classes           | `Component` interface     |
+| Testing Support        | ✅ Override, Clear                      | ✅ Profiles, Mocks                      | ✅ Binding override         | ✅ Test components         |
+| JAR/Directory Scanning | ✅ Both                                 | ✅ Both                                 | Manual by default          | N/A (compile-time)        |
+| Framework Size         | ~19KB                                  | ~10MB+                                 | ~782Kb                     | ~47Kb                     |
+| Best For               | Microservices, Tools, Minimal overhead | Enterprise apps, full web stack        | Medium projects, modular   | Android, compile-safety   |
+| Zero Configuration     | ✅ Full classpath scan                  | ⚠️ Needs setup                         | Manual registration        | Compile-time setup        |
 
 ---
 

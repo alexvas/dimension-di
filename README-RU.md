@@ -17,6 +17,7 @@
     - [Пользовательские провайдеры (аналогично @Provides)](#пользовательские-провайдеры-аналогично-provides)
     - [Пропуск сканирования (только ручная настройка)](#пропуск-сканирования-только-ручная-настройка)
     - [Тестирование и переопределение](#тестирование-и-переопределение)
+    - [Assisted Injection (паттерн Фабрика)](#assisted-injection-паттерн-фабрика)
 - [Как это работает](#как-это-работает)
     - [DependencyScanner](#dependencyscanner)
     - [DimensionDI.Builder](#dimensiondibuilder)
@@ -27,6 +28,7 @@
     - [Начальная загрузка (Bootstrap)](#начальная-загрузка-bootstrap)
     - [Получение в runtime (только в корне композиции)](#получение-в-runtime-только-в-корне-композиции)
     - [Ручная регистрация (в Builder)](#ручная-регистрация-в-builder)
+    - [Assisted injection](#assisted-injection)
     - [Утилиты](#утилиты)
 - [Сравнительные таблицы](#сравнительные-таблицы)
 - [Сравнительный анализ производительности DI-фреймворков](#сравнительный-анализ-производительности-di-фреймворков)
@@ -382,6 +384,127 @@ void runTest() {
 }
 ```
 
+### Assisted Injection (паттерн Фабрика)
+
+Когда вам нужно создавать объекты, которые требуют как зависимостей из DI-контейнера, так и параметров времени выполнения, используйте Assisted Injection. Этот паттерн использует интерфейсы фабрик для комбинирования внедряемых синглтонов со значениями, предоставляемыми вызывающим кодом.
+
+#### Определите компонент с параметрами @Assisted
+
+```java
+import jakarta.inject.Inject;
+import ru.dimension.di.Assisted;
+
+class UserSession {
+    private final String sessionId;
+    private final int timeout;
+    private final SessionManager manager;  // from DI
+    private final Logger logger;           // from DI
+
+    @Inject
+    UserSession(@Assisted String sessionId,
+                @Assisted int timeout,
+                SessionManager manager,
+                Logger logger) {
+        this.sessionId = sessionId;
+        this.timeout = timeout;
+        this.manager = manager;
+        this.logger = logger;
+    }
+}
+```
+
+#### Создайте интерфейс фабрики
+```java
+interface UserSessionFactory {
+    UserSession create(String sessionId, int timeout);
+}
+```
+
+#### Зарегистрируйте и используйте фабрику
+```java
+import ru.dimension.di.Assisted;
+import ru.dimension.di.DimensionDI;
+import ru.dimension.di.ServiceLocator;
+import jakarta.inject.Inject;
+
+// 1. Интерфейс фабрики (должен быть определен)
+// Метод может называться как угодно, главное - совпадающие типы аргументов
+interface UserSessionFactory {
+  UserSession create(String sessionId, int timeoutSeconds);
+}
+
+// 2. Целевой класс (должен быть определен)
+class UserSession {
+  private final String sessionId;
+  private final int timeout;
+
+  // Обязателен @Inject для конструктора
+  // Параметры, передаваемые через фабрику, помечаются @Assisted
+  @Inject
+  public UserSession(@Assisted String sessionId,
+                     @Assisted int timeout,
+                     SomeDependency dependency) { // SomeDependency возьмется из DI
+    this.sessionId = sessionId;
+    this.timeout = timeout;
+    System.out.println("Session created: " + sessionId + ", dependency: " + dependency);
+  }
+}
+
+// Простая зависимость для примера
+class SomeDependency {
+  @Inject
+  public SomeDependency() {}
+}
+
+// 3. Использование (Ваш код внутри main)
+public class Main {
+  public static void main(String[] args) {
+    DimensionDI.builder()
+            .scanPackages("com.example") // Сканирует SomeDependency
+            // Регистрируем фабрику и связываем её с реализацией UserSession
+            .bindFactory(UserSessionFactory.class, UserSession.class)
+            .buildAndInit();
+
+    // Получаем фабрику из DI
+    UserSessionFactory factory = ServiceLocator.get(UserSessionFactory.class);
+
+    // Создаем экземпляры с runtime-параметрами
+    UserSession session1 = factory.create("sess-001", 3600);
+    UserSession session2 = factory.create("sess-002", 7200);
+  }
+}
+```
+
+#### Прямое создание (без интерфейса фабрики)
+
+Для простых случаев создавайте экземпляры напрямую без определения интерфейса фабрики:
+
+```java
+UserSession session = ServiceLocator.create(UserSession.class, "sess-001", 3600);
+```
+
+##### Именованные параметры Assisted
+
+Когда у вас есть несколько параметров одного типа, используйте именованные аннотации @Assisted:
+
+```java
+class Connection {
+    @Inject
+    Connection(@Assisted("host") String host,
+               @Assisted("backup") String backupHost,
+               ConnectionPool pool) {
+        // ...
+    }
+}
+
+interface ConnectionFactory {
+    Connection create(@Assisted("host") String host,
+                      @Assisted("backup") String backupHost);
+}
+```
+
+Примечание: Интерфейсы фабрик по умолчанию являются синглтонами. Каждый вызов фабрики создаёт новый экземпляр целевого класса, при этом DI-зависимости (такие как @Singleton) правильно разделяются между всеми созданными экземплярами.
+
 ## Как это работает
 
 ### DependencyScanner
@@ -401,13 +524,18 @@ void runTest() {
 ### ServiceLocator
 
 - Потокобезопасный реестр `Key -> Supplier<?>`
-- Разрешает параметры конструктора по требованию (поддерживает `@Named`)
-- Выполняет внедрение в члены класса (поля и методы) после конструирования. Поддерживает `@Inject` на полях и методах, включая квалификаторы `@Named` на полях и параметрах методов.
-- Обнаруживает циклические зависимости и бросает исключение с полезным стеком вызовов
-- Кэширует синглтоны через `SingletonSupplier`
+- Разрешает параметры конструктора по запросу (поддерживает `@Named`)
+- **Умный резервный поиск:**
+  - Именованные запросы откатываются к неименованным привязкам, когда именованная не найдена
+  - Неименованные запросы разрешаются к уникальным именованным привязкам, когда неименованная не существует
+  - Ручные привязки переопределяют сканированные при авто-алиасинге
+  - Полезные сообщения об ошибках показывают доступные привязки при неудачном разрешении
+- Выполняет внедрение в члены (поля и методы) после конструктора
+- Поддерживает `@Inject` на полях и методах, включая квалификаторы `@Named`
+- Обнаруживает циклические зависимости и выбрасывает исключение с полезным стеком
+- Кеширует синглтоны через `SingletonSupplier`
 
-**Примечание**: Провайдеры по умолчанию индексируются по конкретным классам. Интерфейсы требуют явной привязки через
-`bind` или `bindNamed`.
+**Примечание**: Поведение резервного поиска можно отключить для более строгой семантики DI, используя `setNamedFallbackEnabled(false)` и `setUnnamedFallbackEnabled(false)`.
 
 ---
 
@@ -423,14 +551,16 @@ void runTest() {
 ## Ограничения
 
 - Поддерживаются только аннотации Jakarta Inject:
-  - `@Inject` (на конструкторах и полях)
+  - `@Inject` (на конструкторах, полях и методах)
   - `@Singleton`
-  - `@Named` (на параметрах конструкторов и полях)
-- Внедрение в поля работает для `private`, `protected` и `public` не-финальных полей, включая унаследованные.
+  - `@Named` (на параметрах конструктора, полях и параметрах методов)
+- Внедрение в поля работает на `private`, `protected` и `public` не-final полях, включая унаследованные.
+- Резервный поиск именованных/неименованных зависимостей включён по умолчанию для удобства; отключите для строгого режима.
+- Ручные привязки переопределяют сканированные, когда авто-алиасинг включён.
 - **Пока не поддерживается**:
-  - Пользовательские квалификаторы, кроме `@Named`
-  - Assisted injection, `Provider<T>`, множественные привязки (коллекции), области видимости (scope) кроме singleton
-- Сканирование использует JDK Class-File API.
+  - Кастомные квалификаторы помимо `@Named`
+  - `Provider<T>`, мульти-привязки (коллекции), скоупы помимо singleton
+- Сканирование использует JDK Class-File API (Java 24+).
 
 ---
 
@@ -445,18 +575,28 @@ void runTest() {
 - `ServiceLocator.get(MyRoot.class)`
 
 ### Ручная регистрация (в Builder)
+- `.provide(type, supplier)` — Регистрирует кастомный провайдер для типа
+- `.provideNamed(type, name, supplier)` — Регистрирует провайдер для именованного типа
+- `.provideSingleton(type, supplier)` — Регистрирует синглтон-провайдер
+- `.bind(interface, impl)` — Привязывает интерфейс к реализации
+- `.bindNamed(interface, name, impl)` — Привязывает именованный интерфейс к реализации
+- `.bindFactory(factoryInterface, targetClass)` — Регистрирует фабрику для assisted injection
+- `.bindFactory(factoryInterface)` — Регистрирует фабрику (целевой класс выводится из возвращаемого типа)
+- `.autoAliasUniqueNamed(boolean)` — Включить/отключить авто-алиасинг для уникальных именованных привязок (по умолчанию: true)
 
-- `.provide(type, supplier)`
-- `.provideNamed(type, name, supplier)`
-- `.bind(interface, impl)`
-- `.bindNamed(interface, name, impl)`
+### Assisted Injection
+- `ServiceLocator.create(type, assistedArgs...)` — Создаёт экземпляр с параметрами времени выполнения
+- `ServiceLocator.createFactory(factoryInterface, targetClass)` — Создаёт реализацию фабрики
+- `@Assisted` — Помечает параметр конструктора как предоставляемый во время выполнения
+- `@Assisted("name")` — Именованный assisted-параметр для разрешения неоднозначности
 
 ### Утилиты
-
-- `ServiceLocator.singleton(supplier)` — Кэширует экземпляр.
+- `ServiceLocator.singleton(supplier)` — Кеширует экземпляр.
 - `ServiceLocator.override(key, supplier)` — Заменяет провайдер во время выполнения.
-- `ServiceLocator.alias(aliasKey, targetKey)` — Создает псевдоним для провайдера.
+- `ServiceLocator.alias(aliasKey, targetKey)` — Создаёт алиас для провайдера.
 - `ServiceLocator.clear()` — Сбрасывает весь реестр.
+- `ServiceLocator.setNamedFallbackEnabled(boolean)` — Включить/отключить резерв именованная→неименованная (по умолчанию: true).
+- `ServiceLocator.setUnnamedFallbackEnabled(boolean)` — Включить/отключить резерв неименованная→именованная (по умолчанию: true).
 
 ## Сравнительные таблицы
 
@@ -475,10 +615,12 @@ void runTest() {
 | Поддержка @Singleton         | ✅ Да                                 | ✅ Да                                   | ✅ Да                        | ✅ Да                      |
 | Квалификаторы @Named         | ✅ Да                                 | ✅ Да                                   | ✅ Да                        | ✅ Да                      |
 | Пользовательские провайдеры  | ✅ `provide()`                        | ✅ `@Bean`                              | ✅ `@Provides`               | ✅ `@Provides`             |
+| Assisted внедрение           | ✅ `@Assisted` + Фабрика              | ❌ Вручную                              | ✅ AssistedInject            | ✅ @AssistedInject         |
 | Внедрение в поля             | ✅ Да                                 | ✅ Да                                   | ✅ Да                        | ✅ Да (members injection)  |
 | Внедрение в методы           | ✅ Да                                 | ✅ Да                                   | ✅ Да                        | ✅ Да (members injection)  |
 | Коллекции/Мульти-биндинги    | ❌ Нет                                | ✅ Да                                   | ✅ Да                        | ✅ Да (@IntoSet/@IntoMap)  |
-| Обнаружение циклич. зависим. | ✅ Да, явная ошибка                   | ✅ Да                                   | ✅ Да                        | ✅ Compile-time            |
+| Fallback: по имени/стандарт  | ✅ Автоматический                     | ❌ Нет                                  | ❌ Нет                       | ❌ Нет                     |
+| Циклические зависимости      | ✅ Да, явная ошибка                   | ✅ Да                                   | ✅ Да                        | ✅ Compile-time            |
 | Система модулей/конфигурации | Fluent Builder                       | `@Configuration` + XML                 | Классы `Module`             | Интерфейс `Component`     |
 | Поддержка тестирования       | ✅ Override, Clear                    | ✅ Профили, Моки                        | ✅ Переопределение биндингов | ✅ Тестовые компоненты     |
 | Сканирование JAR/директорий  | ✅ Оба                                | ✅ Оба                                  | Вручную по умолчанию        | N/A (compile-time)        |
