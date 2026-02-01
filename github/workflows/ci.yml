@@ -1,0 +1,99 @@
+name: Build and Release distributions
+
+on:
+  push:
+    tags:
+      - "v*" # Запускается при создании тега вида v1.0.0
+  workflow_dispatch: # Позволяет запускать вручную
+
+jobs:
+
+  release:
+    name: Релиз Dimension-DI в GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "25"
+          distribution: "liberica"
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Build and release Dimension-DI
+        run: mvn clean deploy -Drevision=${{ steps.version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Delete existing release if present
+        run: |
+          echo "Checking for existing release: ${{ steps.version.outputs.tag_name }}"
+          if gh release view "${{ steps.version.outputs.tag_name }}" 2>/dev/null; then
+            echo "Release exists, deleting..."
+            gh release delete "${{ steps.version.outputs.tag_name }}" --yes
+            echo "Release deleted successfully"
+          else
+            echo "Release does not exist, will create new one"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check files and prepare release
+        id: check_files
+        run: |
+          echo "Available jars in target:"
+          ls -la target/
+          FILES=""
+          for file in target/*.jar; do
+            if [ -f "$file" ]; then
+              FILES="${FILES}${file}"$'\n'
+            fi
+          done
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Files to upload:"
+          echo "$FILES"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: |
+            ## Dimension DI ${{ steps.version.outputs.version }}
+            Это библиотека, совместимая с JDK-25 и выше.
+            Compatible with JDK-25 and higher.
+            该库兼容 JDK-25 及更高版本。
+            
+            ```XML
+            <dependency>
+              <groupId>com.github.${{ github.repository_owner }}</groupId>
+              <artifactId>${{ github.repository_name }}</artifactId>
+              <version>${{ steps.version.outputs.version }}</version>
+            </dependency>
+            ```
+
+          files: ${{ steps.check_files.outputs.files }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
